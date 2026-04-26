@@ -30,9 +30,14 @@ const JWT_SECRET = process.env.JWT_SECRET || 'super_secret_key_123';
 const groq = new Groq({ apiKey: GROQ_KEY });
 
 
+const uploadDir = 'uploads/';
+if (!fs.existsSync(uploadDir)) {
+  fs.mkdirSync(uploadDir, { recursive: true });
+}
+
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
-    cb(null, 'uploads/')
+    cb(null, uploadDir)
   },
   filename: function (req, file, cb) {
     const ext = path.extname(file.originalname);
