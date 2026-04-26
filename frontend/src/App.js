@@ -3,7 +3,7 @@ import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContaine
 import { Icons } from './Icons';
 import './App.css';
 
-const API_URL = 'http://localhost:5000';
+const API_URL = 'https://mom-ai.onrender.com';
 const TEMPLATES = [
   { key: 'General', icon: '📊', label: 'General' },
   { key: 'Technical', icon: '⚙️', label: 'Technical' },
