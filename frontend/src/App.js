@@ -13,7 +13,7 @@ const TEMPLATES = [
 
 function App() {
   /* ===== STATE ===== */
-  const [theme, setTheme] = useState(localStorage.getItem('notula_theme') || 'dark');
+  const [theme, setTheme] = useState(localStorage.getItem('meetlens_theme') || 'dark');
   const [user, setUser] = useState(JSON.parse(localStorage.getItem('mom_user')) || null);
   const [authMode, setAuthMode] = useState('login');
   const [authForm, setAuthForm] = useState({ email: '', password: '' });
@@ -28,13 +28,26 @@ function App() {
   const [template, setTemplate] = useState('General');
   const [toasts, setToasts] = useState([]);
   const [emailModalOpen, setEmailModalOpen] = useState(false);
-  const [emailAddress, setEmailAddress] = useState('');
+  const [emailInput, setEmailInput] = useState('');
+  const [emailList, setEmailList] = useState([]);
+  const [isRecording, setIsRecording] = useState(false);
+  const [liveTranscript, setLiveTranscript] = useState('');
+  const mediaRecorderRef = React.useRef(null);
+  const audioChunksRef = React.useRef([]);
+  const recordingIntervalRef = React.useRef(null);
 
   /* ===== THEME ===== */
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
-    localStorage.setItem('notula_theme', theme);
+    localStorage.setItem('meetlens_theme', theme);
   }, [theme]);
+
+  // Warm up the backend on app load to avoid cold-start delay during auth
+  useEffect(() => {
+    if (!user) {
+      fetch(`${API_URL}/health`).catch(() => {});
+    }
+  }, [user]);
 
   const toggleTheme = () => setTheme(t => t === 'dark' ? 'light' : 'dark');
 
@@ -128,8 +141,71 @@ function App() {
     }
   };
 
+  /* ===== LIVE RECORDING ===== */
+  const sendChunkToAPI = async (blob) => {
+    if (blob.size < 1000) return; // skip near-empty chunks
+    const formData = new FormData();
+    formData.append('audio', blob, 'chunk.webm');
+    try {
+      const res = await fetch(`${API_URL}/api/transcribe`, { method: 'POST', body: formData });
+      if (res.ok) {
+        const result = await res.json();
+        if (result.text && result.text.trim()) {
+          setLiveTranscript(prev => prev ? prev + ' ' + result.text.trim() : result.text.trim());
+          setMeetingNotes(prev => prev ? prev + ' ' + result.text.trim() : result.text.trim());
+        }
+      }
+    } catch (err) {
+      console.error('Chunk transcription error:', err);
+    }
+  };
+
+  const startRecording = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      audioChunksRef.current = [];
+      setLiveTranscript('');
+      setData(null);
+      setMeetingNotes('');
+
+      const mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+      mediaRecorderRef.current = mediaRecorder;
+
+      // Collect all chunks for the current interval
+      let intervalChunks = [];
+      mediaRecorder.ondataavailable = (e) => {
+        if (e.data.size > 0) intervalChunks.push(e.data);
+      };
+
+      mediaRecorder.start(100); // collect data every 100ms
+      setIsRecording(true);
+      showToast('Recording started 🔴', 'info');
+
+      // Every 8 seconds, take what we have and send for transcription
+      recordingIntervalRef.current = setInterval(() => {
+        if (intervalChunks.length === 0) return;
+        const blob = new Blob(intervalChunks, { type: 'audio/webm' });
+        intervalChunks = [];
+        sendChunkToAPI(blob);
+      }, 8000);
+
+    } catch (err) {
+      setError('Microphone access denied. Please allow microphone permissions.');
+    }
+  };
+
+  const stopRecording = () => {
+    if (mediaRecorderRef.current) {
+      mediaRecorderRef.current.stop();
+      mediaRecorderRef.current.stream.getTracks().forEach(t => t.stop());
+    }
+    if (recordingIntervalRef.current) clearInterval(recordingIntervalRef.current);
+    setIsRecording(false);
+    showToast('Recording stopped. Transcript ready! ✅');
+  };
+
   /* ===== MEETING LOGIC ===== */
-  const clearNotes = () => { setMeetingNotes(''); setData(null); setError(''); showToast('Notes cleared', 'info'); };
+  const clearNotes = () => { setMeetingNotes(''); setData(null); setError(''); setLiveTranscript(''); showToast('Notes cleared', 'info'); };
 
   const copyToClipboard = () => {
     if (!meetingNotes) return;
@@ -233,25 +309,43 @@ function App() {
     finally { setLoading(false); }
   };
 
+  const addEmail = (e) => {
+    if (e.key === 'Enter' || e.key === ',') {
+      e.preventDefault();
+      const val = emailInput.trim().replace(/,$/, '');
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (val && emailRegex.test(val) && !emailList.includes(val)) {
+        setEmailList(prev => [...prev, val]);
+      }
+      setEmailInput('');
+    }
+  };
+
+  const removeEmail = (email) => setEmailList(prev => prev.filter(e => e !== email));
+
   const sendEmail = async (e) => {
     e.preventDefault();
-    if (!emailAddress || !data || !user) return;
+    // Also add whatever is currently typed in the input
+    const finalList = [...emailList];
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (emailInput.trim() && emailRegex.test(emailInput.trim()) && !finalList.includes(emailInput.trim())) {
+      finalList.push(emailInput.trim());
+    }
+    if (finalList.length === 0 || !data || !user) { showToast('Add at least one email address', 'error'); return; }
     setLoading(true);
     try {
       const res = await fetch(`${API_URL}/api/email-mom`, {
-        method: 'POST', 
+        method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${user.token}` },
-        body: JSON.stringify({ email: emailAddress, momData: data })
+        body: JSON.stringify({ emails: finalList, momData: data })
       });
       const result = await res.json();
       if (res.ok) {
-        showToast('Email sent successfully!');
+        showToast(`Email sent to ${finalList.length} participant${finalList.length > 1 ? 's' : ''}! ✉️`);
         setEmailModalOpen(false);
-        setEmailAddress('');
-        if (result.previewUrl) {
-          console.log("Ethereal Preview URL: ", result.previewUrl);
-          showToast('Check console for test email link!', 'info');
-        }
+        setEmailList([]);
+        setEmailInput('');
+        if (result.previewUrl) console.log('Ethereal Preview URL:', result.previewUrl);
       } else {
         throw new Error(result.error || 'Failed to send');
       }
@@ -292,7 +386,7 @@ function App() {
         <div className="auth-screen">
           <div className="auth-card">
             <div className="auth-brand">
-              <h1>Notula</h1>
+              <h1>MeetLens</h1>
               <p>Transform meetings into action</p>
             </div>
             {authError && <div className="auth-error">{authError}</div>}
@@ -325,7 +419,7 @@ function App() {
           {/* SIDEBAR */}
           <aside className="sidebar">
             <div className="sidebar-brand">
-              <h2>Notula</h2>
+              <h2>MeetLens</h2>
               <span>AI Meeting Minutes</span>
             </div>
             <nav className="sidebar-nav">
@@ -369,7 +463,7 @@ function App() {
                 <>
                   <div className="page-header">
                     <h1>New Meeting</h1>
-                    <p>Paste notes, upload a file, or transcribe audio</p>
+                    <p>Paste notes, upload a file, or record your meeting live</p>
                   </div>
 
                   {/* Template Pills */}
@@ -401,6 +495,24 @@ function App() {
                       <div className="word-count">{wordCount} words</div>
                     </div>
                     <div className="upload-stack">
+                      {/* Live Record Card */}
+                      <div className={`upload-card ${isRecording ? 'recording-active' : ''}`}>
+                        <h3>🔴 Live Recording</h3>
+                        <p>{isRecording ? 'Recording in progress...' : 'Record your meeting in real time'}</p>
+                        {isRecording && (
+                          <div className="live-transcript-box">
+                            {liveTranscript || <span style={{opacity:0.4}}>Listening...</span>}
+                          </div>
+                        )}
+                        <button
+                          className={`upload-label ${isRecording ? 'recording-btn-stop' : ''}`}
+                          onClick={isRecording ? stopRecording : startRecording}
+                          disabled={transcribing}
+                        >
+                          {isRecording ? '⏹ Stop Recording' : '⏺ Start Recording'}
+                        </button>
+                      </div>
+                      {/* File Upload Card */}
                       <div className="upload-card">
                         <h3>{Icons.mic(22)} Audio Upload</h3>
                         <p>MP3, WAV, M4A — up to 25MB</p>
@@ -638,24 +750,46 @@ function App() {
 
             {/* === EMAIL MODAL === */}
             {emailModalOpen && (
-              <div className="modal-overlay">
+              <div className="modal-overlay" onClick={(e) => { if(e.target.classList.contains('modal-overlay')) { setEmailModalOpen(false); setEmailList([]); setEmailInput(''); }}}>
                 <div className="modal-content glass-card">
-                  <h2>Email Meeting Minutes</h2>
-                  <p>Send this summary directly to a participant.</p>
+                  <h2>✉️ Email Meeting Minutes</h2>
+                  <p style={{color:'var(--text-secondary)', fontSize:'0.9rem', marginTop:4}}>Type an email and press <kbd>Enter</kbd> or <kbd>,</kbd> to add. Send to multiple participants at once.</p>
                   <form onSubmit={sendEmail}>
-                    <input 
-                      type="email" 
-                      placeholder="participant@company.com" 
-                      value={emailAddress} 
-                      onChange={e => setEmailAddress(e.target.value)} 
-                      required 
-                      className="edit-title" 
-                      style={{width: '100%', padding: '12px', marginTop: '16px', fontSize: '1rem'}}
-                    />
+                    {/* Chip Input Area */}
+                    <div className="email-chip-container">
+                      {emailList.map(email => (
+                        <span key={email} className="email-chip">
+                          {email}
+                          <button type="button" className="email-chip-remove" onClick={() => removeEmail(email)} aria-label="Remove">×</button>
+                        </span>
+                      ))}
+                      <input
+                        type="email"
+                        className="email-chip-input"
+                        placeholder={emailList.length === 0 ? 'participant@company.com' : 'Add another...'}
+                        value={emailInput}
+                        onChange={e => setEmailInput(e.target.value)}
+                        onKeyDown={addEmail}
+                        onBlur={() => {
+                          // Add on blur too for convenience
+                          const val = emailInput.trim();
+                          const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+                          if (val && emailRegex.test(val) && !emailList.includes(val)) {
+                            setEmailList(prev => [...prev, val]);
+                            setEmailInput('');
+                          }
+                        }}
+                      />
+                    </div>
+                    {emailList.length > 0 && (
+                      <p style={{fontSize:'0.78rem', color:'var(--text-muted)', marginTop:8}}>
+                        ✔ {emailList.length} recipient{emailList.length > 1 ? 's' : ''} added
+                      </p>
+                    )}
                     <div className="btn-group" style={{marginTop: '24px', justifyContent: 'flex-end'}}>
-                      <button type="button" className="btn btn-secondary" onClick={() => setEmailModalOpen(false)}>Cancel</button>
-                      <button type="submit" className="btn btn-primary" disabled={loading}>
-                        {loading ? 'Sending...' : 'Send Email'}
+                      <button type="button" className="btn btn-secondary" onClick={() => { setEmailModalOpen(false); setEmailList([]); setEmailInput(''); }}>Cancel</button>
+                      <button type="submit" className="btn btn-primary" disabled={loading || (emailList.length === 0 && !emailInput.trim())}>
+                        {loading ? 'Sending...' : `Send${emailList.length > 1 ? ` to ${emailList.length}` : ''}`}
                       </button>
                     </div>
                   </form>

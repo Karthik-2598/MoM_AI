@@ -16,9 +16,13 @@ const Meeting = require('./models/Meeting');
 const Groq = require('groq-sdk');
 const nodemailer = require('nodemailer');
 
-//Ksk@#2504
 
-mongoose.connect(process.env.MONGO_URI);
+mongoose.connect(process.env.MONGO_URI, {
+  serverSelectionTimeoutMS: 5000,
+  socketTimeoutMS: 45000,
+  maxPoolSize: 10,
+}).then(() => console.log('MongoDB connected'))
+  .catch(err => console.error('MongoDB connection error:', err));
 const app = express();
 app.use(cors());
 app.use(express.json({limit: '10mb'}));
@@ -32,7 +36,7 @@ const groq = new Groq({ apiKey: GROQ_KEY });
 
 const uploadDir = 'uploads/';
 if (!fs.existsSync(uploadDir)) {
-  fs.mkdirSync(uploadDir, { recursive: true });
+  fs.mkdirSync(uploadDir, { recursive: true }); 
 }
 
 const storage = multer.diskStorage({
@@ -61,12 +65,24 @@ const authenticateToken = (req,res,next)=>{
   });
 };
 
+// Health check endpoint — keeps the server alive & fast
+app.get('/health', (req, res) => res.json({ status: 'ok', timestamp: new Date().toISOString() }));
+
+// Self-ping every 13 minutes
+const SELF_URL = process.env.RENDER_EXTERNAL_URL || `http://localhost:${process.env.PORT || 5000}`;
+setInterval(async () => {
+  try {
+    await fetch(`${SELF_URL}/health`);
+    console.log('Self-ping sent to keep server warm');
+  } catch (e) { }
+}, 13 * 60 * 1000);
+
 
 //Register
 app.post('/api/auth/register', async(req,res)=> {
   try{
     const {email, password} = req.body;
-    const hashedPassword = await bcrypt.hash(password, 10);
+    const hashedPassword = await bcrypt.hash(password, 8);
     const user = new User({email, password: hashedPassword});
     await user.save();
     res.json({success: true, message: "user created!!!"});
@@ -290,8 +306,11 @@ app.delete('/api/history/:id', authenticateToken, async(req,res)=>{
 
 app.post('/api/email-mom', authenticateToken, async (req, res) => {
     try {
-        const { email, momData } = req.body;
-        if (!email || !momData) return res.status(400).json({error: 'Email and MoM data required'});
+        const { email, emails, momData } = req.body;
+
+        // Support both single email (legacy) and array of emails (new)
+        const recipients = emails && emails.length > 0 ? emails : (email ? [email] : []);
+        if (recipients.length === 0 || !momData) return res.status(400).json({error: 'At least one email and MoM data required'});
 
         // Format the email nicely
         const htmlContent = `
@@ -301,10 +320,10 @@ app.post('/api/email-mom', authenticateToken, async (req, res) => {
             <ul>${(momData.decisions || []).map(d => `<li>${typeof d === 'string' ? d : `<strong>${d.title || 'Decision'}</strong>: ${d.description || ''}`}</li>`).join('')}</ul>
             <h3>Action Items</h3>
             <ul>${(momData.actionItems || []).map(a => `<li><strong>${a.assignedTo || 'Unassigned'}:</strong> ${a.title || ''} (Due: ${a.dueDate || 'N/A'})</li>`).join('')}</ul>
-            <p><i>Sent from Notula AI</i></p>
+            <p><i>Sent from MeetLens</i></p>
         `;
 
-        // Create test account if env vars are missing
+        // Create transporter
         let transporter;
         if (process.env.SMTP_USER && process.env.SMTP_PASS) {
             transporter = nodemailer.createTransport({
@@ -323,8 +342,8 @@ app.post('/api/email-mom', authenticateToken, async (req, res) => {
         }
 
         const info = await transporter.sendMail({
-            from: '"Notula AI" <noreply@notula.ai>',
-            to: email,
+            from: '"MeetLens" <noreply@meetlens.ai>',
+            to: recipients.join(', '),
             subject: `Minutes of Meeting: ${momData.meetingTitle || 'Summary'}`,
             html: htmlContent,
         });
@@ -335,10 +354,10 @@ app.post('/api/email-mom', authenticateToken, async (req, res) => {
             previewUrl = nodemailer.getTestMessageUrl(info);
             console.log("Email sent via Ethereal! Preview URL: %s", previewUrl);
         } else {
-            console.log("Email sent successfully to", email);
+            console.log(`Email sent successfully to ${recipients.length} recipient(s):`, recipients.join(', '));
         }
         
-        res.json({ success: true, message: 'Email sent successfully', previewUrl });
+        res.json({ success: true, message: `Email sent to ${recipients.length} recipient(s)`, previewUrl });
     } catch (error) {
         console.error('Email error:', error);
         res.status(500).json({ error: 'Failed to send email' });

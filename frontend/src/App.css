@@ -1,4 +1,4 @@
-/* ===== NOTULA AI — THEME VARIABLES ===== */
+/* ===== MEETLENS — THEME VARIABLES ===== */
 :root {
   --bg-base: #0a0e1a; --bg-primary: #0f172a; --bg-secondary: #1e293b;
   --bg-elevated: #334155; --bg-glass: rgba(15,23,42,0.75);
@@ -35,6 +35,7 @@
 @keyframes spin { to{transform:rotate(360deg)} }
 @keyframes dashMarch { to{stroke-dashoffset:-20} }
 @keyframes glow { 0%,100%{box-shadow:0 0 20px var(--accent-glow)} 50%{box-shadow:0 0 40px var(--accent-glow)} }
+@keyframes recordPulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:0.5;transform:scale(0.85)} }
 
 /* ===== BASE ===== */
 body { background: var(--bg-base); color: var(--text-primary); }
@@ -199,6 +200,34 @@ body { background: var(--bg-base); color: var(--text-primary); }
 }
 .upload-label:hover { transform:translateY(-1px); box-shadow:0 4px 16px var(--accent-glow); }
 .upload-label.loading { background:var(--bg-elevated); animation:pulse 1.5s infinite; }
+.upload-label[disabled] { opacity:0.5; cursor:not-allowed; }
+
+/* Recording States */
+.recording-active {
+  border-color: rgba(239,68,68,0.6) !important;
+  background: rgba(239,68,68,0.05) !important;
+  box-shadow: 0 0 0 3px rgba(239,68,68,0.15);
+  animation: glow 2s ease infinite;
+}
+.recording-active h3 { color: #f87171; }
+.recording-btn-stop {
+  background: linear-gradient(135deg, #ef4444, #dc2626) !important;
+  animation: recordPulse 1.5s infinite;
+}
+.live-transcript-box {
+  margin: 12px 0 8px;
+  background: var(--bg-base);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-sm);
+  padding: 12px 14px;
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+  line-height: 1.6;
+  max-height: 120px;
+  overflow-y: auto;
+  text-align: left;
+  scroll-behavior: smooth;
+}
 .toolbar { display:flex; gap:8px; justify-content:flex-end; margin-bottom:16px; }
 
 /* ===== BUTTONS ===== */
@@ -348,6 +377,53 @@ td { padding:8px 10px; border-bottom:1px solid var(--glass-border); }
   margin-bottom:8px; background:var(--bg-secondary);
   border-radius:0 var(--radius-xs) var(--radius-xs) 0;
   font-size:0.88rem; color:var(--text-secondary);
+}
+
+/* ===== MODAL ===== */
+.modal-overlay {
+  position:fixed; inset:0; background:rgba(0,0,0,0.6); backdrop-filter:blur(6px);
+  display:flex; align-items:center; justify-content:center; z-index:1000;
+  animation: fadeIn 0.2s ease;
+}
+.modal-content {
+  width:100%; max-width:480px; padding:32px;
+  animation: fadeSlideIn 0.3s ease;
+}
+.modal-content h2 { font-size:1.3rem; font-weight:700; margin-bottom:4px; }
+
+/* ===== EMAIL CHIP INPUT ===== */
+.email-chip-container {
+  display:flex; flex-wrap:wrap; gap:8px; align-items:center;
+  min-height:52px; margin-top:16px; padding:10px 14px;
+  background:var(--bg-secondary); border:1px solid var(--glass-border);
+  border-radius:var(--radius-sm); cursor:text; transition:var(--transition);
+}
+.email-chip-container:focus-within {
+  border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-glow);
+}
+.email-chip {
+  display:inline-flex; align-items:center; gap:6px;
+  background:var(--accent-glow); color:var(--accent);
+  border:1px solid rgba(99,102,241,0.3); border-radius:20px;
+  padding:4px 10px 4px 12px; font-size:0.82rem; font-weight:500;
+  animation: fadeSlideIn 0.2s ease;
+}
+.email-chip-remove {
+  background:none; border:none; color:var(--accent); cursor:pointer;
+  font-size:1rem; line-height:1; padding:0; opacity:0.7; transition:var(--transition);
+}
+.email-chip-remove:hover { opacity:1; transform:scale(1.2); }
+.email-chip-input {
+  flex:1; min-width:180px; border:none; background:transparent;
+  color:var(--text-primary); font-size:0.9rem; outline:none;
+  padding:2px 0;
+}
+.email-chip-input::placeholder { color:var(--text-muted); }
+
+kbd {
+  background:var(--bg-elevated); border:1px solid var(--glass-border);
+  border-radius:4px; padding:1px 6px; font-size:0.75rem;
+  font-family:monospace; color:var(--text-secondary);
 }
 
 /* ===== RESPONSIVE ===== */
