@@ -312,7 +312,7 @@ app.post('/api/email-mom', authenticateToken, async (req, res) => {
         const recipients = emails && emails.length > 0 ? emails : (email ? [email] : []);
         if (recipients.length === 0 || !momData) return res.status(400).json({error: 'At least one email and MoM data required'});
 
-        // Format the email nicely
+        // Format the email body
         const htmlContent = `
             <h2>${momData.meetingTitle || 'Minutes of Meeting'}</h2>
             <p><strong>Date:</strong> ${momData.date || 'N/A'}</p>
@@ -325,9 +325,10 @@ app.post('/api/email-mom', authenticateToken, async (req, res) => {
 
         // Create transporter
         let transporter;
+        let isEthereal = false;
         if (process.env.SMTP_USER && process.env.SMTP_PASS) {
             transporter = nodemailer.createTransport({
-                service: 'gmail', 
+                service: 'gmail',
                 auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS }
             });
         } else {
@@ -336,31 +337,37 @@ app.post('/api/email-mom', authenticateToken, async (req, res) => {
             transporter = nodemailer.createTransport({
                 host: "smtp.ethereal.email",
                 port: 587,
-                secure: false, 
+                secure: false,
                 auth: { user: testAccount.user, pass: testAccount.pass }
             });
+            isEthereal = true;
         }
 
+        // 'from' must match the authenticated SMTP account for Gmail
+        const fromAddress = process.env.SMTP_USER
+            ? `"MeetLens" <${process.env.SMTP_USER}>`
+            : '"MeetLens" <noreply@meetlens.ai>';
+
+        // Send to all recipients in a single email (CC-style)
         const info = await transporter.sendMail({
-            from: '"MeetLens" <noreply@meetlens.ai>',
+            from: fromAddress,
             to: recipients.join(', '),
             subject: `Minutes of Meeting: ${momData.meetingTitle || 'Summary'}`,
             html: htmlContent,
         });
 
-        // If using Ethereal, log the preview URL
         let previewUrl = null;
-        if (!process.env.SMTP_USER) {
+        if (isEthereal) {
             previewUrl = nodemailer.getTestMessageUrl(info);
             console.log("Email sent via Ethereal! Preview URL: %s", previewUrl);
         } else {
             console.log(`Email sent successfully to ${recipients.length} recipient(s):`, recipients.join(', '));
         }
-        
+
         res.json({ success: true, message: `Email sent to ${recipients.length} recipient(s)`, previewUrl });
     } catch (error) {
-        console.error('Email error:', error);
-        res.status(500).json({ error: 'Failed to send email' });
+        console.error('Email error:', error.message);
+        res.status(500).json({ error: `Failed to send email: ${error.message}` });
     }
 });
 
