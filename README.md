@@ -1,6 +1,6 @@
-# Notula AI (MoM_AI)
+# MeetLens AI (MoM_AI)
 
-Notula AI is a professional, production-ready SaaS application designed to transform meeting minutes into structured, actionable items. It features a premium dark/light-mode UI with glassmorphism aesthetics and an auth-first user experience. The powerful backend utilizes the Groq SDK and Llama 3.3 models to transcribe audio and analyze text, generating intelligent meeting summaries in both DOCX and PDF formats.
+Meetlens AI is a professional, production-ready SaaS application designed to transform meeting minutes into structured, actionable items. It features a premium dark/light-mode UI with glassmorphism aesthetics and an auth-first user experience. The powerful backend utilizes the Groq SDK and Llama 3.3 models to transcribe audio and analyze text, generating intelligent meeting summaries in both DOCX and PDF formats.
 
 ## Key Features
 
