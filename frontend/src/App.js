@@ -1,9 +1,10 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { Icons } from './Icons';
 import './App.css';
 
-const API_URL = 'https://mom-ai.onrender.com';
+//const API_URL = 'https://mom-ai.onrender.com';
+const API_URL = 'http://localhost:5000';
 const TEMPLATES = [
   { key: 'General', icon: '📊', label: 'General' },
   { key: 'Technical', icon: '⚙️', label: 'Technical' },
@@ -32,9 +33,14 @@ function App() {
   const [emailList, setEmailList] = useState([]);
   const [isRecording, setIsRecording] = useState(false);
   const [liveTranscript, setLiveTranscript] = useState('');
+  const recognitionRef = React.useRef(null);       // Web Speech API instance
+  const finalTranscriptRef = React.useRef('');      // committed final words
+  const isRecordingRef = React.useRef(false);       // live flag (avoids stale closure in onend)
+  // Whisper fallback refs (used only when Web Speech API is unavailable)
   const mediaRecorderRef = React.useRef(null);
-  const audioChunksRef = React.useRef([]);
   const recordingIntervalRef = React.useRef(null);
+  const isSendingRef = React.useRef(false);
+  const chunkQueueRef = React.useRef([]);
 
   /* ===== THEME ===== */
   useEffect(() => {
@@ -49,7 +55,7 @@ function App() {
     }
   }, [user]);
 
-  const toggleTheme = () => setTheme(t => t === 'dark' ? 'light' : 'dark');
+  const toggleTheme = useCallback(() => setTheme(t => t === 'dark' ? 'light' : 'dark'), []);
 
   /* ===== TOAST SYSTEM ===== */
   const showToast = useCallback((message, type = 'success') => {
@@ -85,14 +91,14 @@ function App() {
     }
   };
 
-  const logout = () => {
+  const logout = useCallback(() => {
     localStorage.removeItem('mom_user');
     setUser(null);
     setHistory([]);
     setData(null);
     setMeetingNotes('');
     showToast('Logged out successfully', 'info');
-  };
+  }, [showToast]);
 
   /* ===== HISTORY ===== */
   const fetchHistory = useCallback(async () => {
@@ -122,7 +128,7 @@ function App() {
     finally { setLoading(false); }
   };
 
-  const deleteMeeting = async (id, e) => {
+  const deleteMeeting = useCallback(async (id, e) => {
     e.stopPropagation(); // Prevent card click
     if (!window.confirm('Are you sure you want to delete this meeting?')) return;
     try {
@@ -139,13 +145,17 @@ function App() {
     } catch {
       showToast('Error connecting to server', 'error');
     }
-  };
+  }, [user, showToast, fetchHistory]);
 
   /* ===== LIVE RECORDING ===== */
-  const sendChunkToAPI = async (blob) => {
-    if (blob.size < 1000) return; // skip near-empty chunks
+
+  // ── Whisper fallback: used only when Web Speech API is unavailable ──
+  const processChunkQueue = async () => {
+    if (isSendingRef.current || chunkQueueRef.current.length === 0) return;
+    isSendingRef.current = true;
+    const blob = chunkQueueRef.current.shift();
     const formData = new FormData();
-    formData.append('audio', blob, 'chunk.webm');
+    formData.append('audio', blob, blob.type.includes('mp4') ? 'chunk.mp4' : 'chunk.webm');
     try {
       const res = await fetch(`${API_URL}/api/transcribe`, { method: 'POST', body: formData });
       if (res.ok) {
@@ -154,58 +164,141 @@ function App() {
           setLiveTranscript(prev => prev ? prev + ' ' + result.text.trim() : result.text.trim());
           setMeetingNotes(prev => prev ? prev + ' ' + result.text.trim() : result.text.trim());
         }
+      } else if (res.status === 429) {
+        setLiveTranscript(prev => prev + ' [⚠ Rate limit — waiting...]');
       }
     } catch (err) {
-      console.error('Chunk transcription error:', err);
+      console.error('Whisper fallback error:', err);
+    } finally {
+      isSendingRef.current = false;
+      if (chunkQueueRef.current.length > 0) processChunkQueue();
     }
   };
 
+  const startWhisperFallback = async () => {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    chunkQueueRef.current = [];
+    isSendingRef.current = false;
+    const mimeType = ['audio/webm;codecs=opus','audio/webm','audio/ogg;codecs=opus','audio/mp4']
+      .find(t => MediaRecorder.isTypeSupported(t)) || '';
+    const mediaRecorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+    mediaRecorderRef.current = mediaRecorder;
+    let intervalChunks = [];
+    mediaRecorder.ondataavailable = (e) => { if (e.data && e.data.size > 0) intervalChunks.push(e.data); };
+    mediaRecorder.start(200);
+    recordingIntervalRef.current = setInterval(() => {
+      if (!intervalChunks.length) return;
+      const blob = new Blob(intervalChunks, { type: mediaRecorder.mimeType || 'audio/webm' });
+      intervalChunks = [];
+      if (blob.size < 1000) return;
+      chunkQueueRef.current.push(blob);
+      processChunkQueue();
+    }, 8000);
+  };
+
+  // ── Primary: Web Speech API — real-time, word-by-word, zero latency ──
   const startRecording = async () => {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+    finalTranscriptRef.current = '';
+    isRecordingRef.current = true;
+    setLiveTranscript('');
+    setData(null);
+    setMeetingNotes('');
+    setIsRecording(true);
+    showToast('Recording started 🔴', 'info');
+
+    if (!SpeechRecognition) {
+      // Browser doesn't support Web Speech API — fall back to Whisper
+      showToast('Using Whisper fallback (Chrome recommended for real-time)', 'info');
+      try { await startWhisperFallback(); } catch { setError('Microphone access denied.'); }
+      return;
+    }
+
+    const recognition = new SpeechRecognition();
+    recognition.continuous = true;      // don't stop between pauses
+    recognition.interimResults = true;  // show words as they are being spoken
+    recognition.lang = 'en-US';
+    recognition.maxAlternatives = 3;   // get 3 candidates — pick highest confidence
+    recognitionRef.current = recognition;
+
+    recognition.onresult = (e) => {
+      let interim = '';
+      let newFinal = '';
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        if (e.results[i].isFinal) {
+          const best = Array.from(e.results[i])
+            .sort((a, b) => b.confidence - a.confidence)[0];
+          if (best.confidence >= 0.75) {
+            newFinal += best.transcript + ' ';
+          } else if (best.confidence > 0) {
+            newFinal += best.transcript + ' ';
+            console.debug(`Low confidence (${(best.confidence * 100).toFixed(0)}%): "${best.transcript}"`);
+          }
+        } else {
+          // Interim: just show the top result for live feedback
+          interim += e.results[i][0].transcript;
+        }
+      }
+      if (newFinal) {
+        finalTranscriptRef.current += newFinal;
+        setMeetingNotes(finalTranscriptRef.current.trim());
+      }
+      // Live transcript box = committed words + in-progress interim words
+      setLiveTranscript((finalTranscriptRef.current + interim).trim());
+    };
+
+    recognition.onerror = (e) => {
+      if (e.error === 'no-speech' || e.error === 'aborted') return; // non-fatal
+      console.error('Speech recognition error:', e.error);
+      setLiveTranscript(prev => prev + ` [⚠ ${e.error}]`);
+    };
+
+    recognition.onend = () => {
+      // Auto-restart if the user hasn't stopped — browser stops on silence
+      if (isRecordingRef.current) {
+        // Option 2: mark the gap so user knows a restart happened
+        const gapMarker = ' … ';
+        finalTranscriptRef.current += gapMarker;
+        setLiveTranscript(prev => prev + gapMarker);
+        try { recognition.start(); } catch { /* already started */ }
+      }
+    };
+
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      audioChunksRef.current = [];
-      setLiveTranscript('');
-      setData(null);
-      setMeetingNotes('');
-
-      const mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
-      mediaRecorderRef.current = mediaRecorder;
-
-      // Collect all chunks for the current interval
-      let intervalChunks = [];
-      mediaRecorder.ondataavailable = (e) => {
-        if (e.data.size > 0) intervalChunks.push(e.data);
-      };
-
-      mediaRecorder.start(100); // collect data every 100ms
-      setIsRecording(true);
-      showToast('Recording started 🔴', 'info');
-
-      // Every 8 seconds, take what we have and send for transcription
-      recordingIntervalRef.current = setInterval(() => {
-        if (intervalChunks.length === 0) return;
-        const blob = new Blob(intervalChunks, { type: 'audio/webm' });
-        intervalChunks = [];
-        sendChunkToAPI(blob);
-      }, 8000);
-
+      recognition.start();
     } catch (err) {
-      setError('Microphone access denied. Please allow microphone permissions.');
+      setError('Could not start speech recognition. Please allow microphone access.');
+      setIsRecording(false);
+      isRecordingRef.current = false;
     }
   };
 
   const stopRecording = () => {
+    isRecordingRef.current = false;
+    if (recognitionRef.current) {
+      recognitionRef.current.stop();
+      recognitionRef.current = null;
+    }
+    // Stop Whisper fallback if it was used
     if (mediaRecorderRef.current) {
       mediaRecorderRef.current.stop();
-      mediaRecorderRef.current.stream.getTracks().forEach(t => t.stop());
+      mediaRecorderRef.current.stream?.getTracks().forEach(t => t.stop());
+      mediaRecorderRef.current = null;
     }
-    if (recordingIntervalRef.current) clearInterval(recordingIntervalRef.current);
+    if (recordingIntervalRef.current) { clearInterval(recordingIntervalRef.current); }
     setIsRecording(false);
     showToast('Recording stopped. Transcript ready! ✅');
   };
 
   /* ===== MEETING LOGIC ===== */
-  const clearNotes = () => { setMeetingNotes(''); setData(null); setError(''); setLiveTranscript(''); showToast('Notes cleared', 'info'); };
+  const clearNotes = useCallback(() => {
+    setMeetingNotes('');
+    setData(null);
+    setError('');
+    setLiveTranscript('');
+    showToast('Notes cleared', 'info');
+  }, [showToast]);
 
   const copyToClipboard = () => {
     if (!meetingNotes) return;
@@ -213,10 +306,14 @@ function App() {
     showToast('Copied to clipboard!');
   };
 
-  const handleActionItemChange = (id, field, value) => {
-    const updated = data.actionItems.map(item => item.id === id ? { ...item, [field]: value } : item);
-    setData({ ...data, actionItems: updated });
-  };
+  const handleActionItemChange = useCallback((id, field, value) => {
+    setData(prev => ({
+      ...prev,
+      actionItems: prev.actionItems.map(item =>
+        item.id === id ? { ...item, [field]: value } : item
+      ),
+    }));
+  }, []); // uses functional setData — no stale closure on 'data'
 
   const handleGeneralInfoChange = (field, value) => setData({ ...data, [field]: value });
 
@@ -321,7 +418,7 @@ function App() {
     }
   };
 
-  const removeEmail = (email) => setEmailList(prev => prev.filter(e => e !== email));
+  const removeEmail = useCallback((email) => setEmailList(prev => prev.filter(e => e !== email)), []);
 
   const sendEmail = async (e) => {
     e.preventDefault();
@@ -356,16 +453,20 @@ function App() {
     }
   };
 
-  const calculateAnalytics = () => {
+  // useMemo: only recomputes when history changes, not on every render
+  const analyticsData = useMemo(() => {
     if (!history.length) return [];
     const templateCounts = history.reduce((acc, curr) => {
       acc[curr.templateType] = (acc[curr.templateType] || 0) + 1;
       return acc;
     }, {});
     return Object.keys(templateCounts).map(key => ({ name: key, meetings: templateCounts[key] }));
-  };
+  }, [history]);
 
-  const wordCount = meetingNotes.trim() ? meetingNotes.trim().split(/\s+/).length : 0;
+  const wordCount = useMemo(
+    () => (meetingNotes.trim() ? meetingNotes.trim().split(/\s+/).length : 0),
+    [meetingNotes]
+  );
 
   /* ===== RENDER ===== */
   return (
@@ -652,7 +753,7 @@ function App() {
                       {loading ? <><span className="spinner" style={{width:18,height:18,borderWidth:2}}/> Generating...</>
                         : <>{Icons.download(18)} DOCX</>}
                     </button>
-                    <button className="btn btn-primary" onClick={downloadPDF} style={{background: 'var(--primary-dark)'}}>
+                    <button className="btn btn-primary" onClick={downloadPDF} style={{background: 'linear-gradient(135deg,#4f46e5,#7c3aed)'}}>
                       {Icons.download(18)} PDF
                     </button>
                     <button className="btn btn-primary" onClick={() => setEmailModalOpen(true)} style={{background: 'var(--accent)'}}>
@@ -733,7 +834,7 @@ function App() {
                     <div className="glass-card" style={{ height: 400, padding: '2rem' }}>
                       <div className="section-title">Meetings by Template Type</div>
                       <ResponsiveContainer width="100%" height="100%">
-                        <BarChart data={calculateAnalytics()}>
+                        <BarChart data={analyticsData}>
                           <CartesianGrid strokeDasharray="3 3" stroke="#333" />
                           <XAxis dataKey="name" stroke="var(--text-secondary)" />
                           <YAxis stroke="var(--text-secondary)" allowDecimals={false} />
@@ -764,14 +865,14 @@ function App() {
                         </span>
                       ))}
                       <input
-                        type="email"
+                        type="text"
                         className="email-chip-input"
                         placeholder={emailList.length === 0 ? 'participant@company.com' : 'Add another...'}
                         value={emailInput}
                         onChange={e => setEmailInput(e.target.value)}
                         onKeyDown={addEmail}
                         onBlur={() => {
-                          // Add on blur too for convenience
+                          // Add on blur too for convenience (e.g. when clicking Send directly)
                           const val = emailInput.trim();
                           const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
                           if (val && emailRegex.test(val) && !emailList.includes(val)) {

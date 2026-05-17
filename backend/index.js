@@ -307,10 +307,20 @@ app.delete('/api/history/:id', authenticateToken, async(req,res)=>{
 app.post('/api/email-mom', authenticateToken, async (req, res) => {
     try {
         const { email, emails, momData } = req.body;
-
+        console.log("calling mail server...");
         // Support both single email (legacy) and array of emails (new)
-        const recipients = emails && emails.length > 0 ? emails : (email ? [email] : []);
-        if (recipients.length === 0 || !momData) return res.status(400).json({error: 'At least one email and MoM data required'});
+        const rawRecipients = emails && Array.isArray(emails) && emails.length > 0
+            ? emails
+            : (email ? [email] : []);
+            console.log("raw recipients: ", rawRecipients);
+
+        // Validate every recipient is a proper email address
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        const recipients = rawRecipients.map(r => r.trim()).filter(r => emailRegex.test(r));
+
+        if (recipients.length === 0 || !momData) {
+            return res.status(400).json({ error: 'At least one valid email address and MoM data are required' });
+        }
 
         // Format the email body
         const htmlContent = `
@@ -335,7 +345,7 @@ app.post('/api/email-mom', authenticateToken, async (req, res) => {
             console.log('No SMTP credentials found. Creating Ethereal test account...');
             const testAccount = await nodemailer.createTestAccount();
             transporter = nodemailer.createTransport({
-                host: "smtp.ethereal.email",
+                host: 'smtp.ethereal.email',
                 port: 587,
                 secure: false,
                 auth: { user: testAccount.user, pass: testAccount.pass }
@@ -348,7 +358,9 @@ app.post('/api/email-mom', authenticateToken, async (req, res) => {
             ? `"MeetLens" <${process.env.SMTP_USER}>`
             : '"MeetLens" <noreply@meetlens.ai>';
 
-        // Send to all recipients in a single email (CC-style)
+        console.log("fromAddress: ", fromAddress);
+
+        // Send to all recipients in a single email (TO field)
         const info = await transporter.sendMail({
             from: fromAddress,
             to: recipients.join(', '),
@@ -359,7 +371,7 @@ app.post('/api/email-mom', authenticateToken, async (req, res) => {
         let previewUrl = null;
         if (isEthereal) {
             previewUrl = nodemailer.getTestMessageUrl(info);
-            console.log("Email sent via Ethereal! Preview URL: %s", previewUrl);
+            console.log('Email sent via Ethereal! Preview URL: %s', previewUrl);
         } else {
             console.log(`Email sent successfully to ${recipients.length} recipient(s):`, recipients.join(', '));
         }
@@ -684,4 +696,4 @@ app.listen(PORT, () => {
   }
 });
 
-module.export = app;
+module.exports = app;
